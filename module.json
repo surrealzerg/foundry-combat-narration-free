@@ -1,0 +1,26 @@
+{
+  "title": "Combat Narration Free",
+  "description": "Plays gothic audio narration based on damage type and severity when players attack in combat.",
+  "version": "1.0.0",
+  "esmodules": [
+    "narrateCombat.js"
+  ],
+  "required": [
+    "midi-qol"
+  ],
+  "authors": [
+    {
+      "name": "Steven VanLandingham",
+      "url": "https://famtickets.com",
+      "discord": "Surreal1481"
+    }
+  ],
+  "url": "https://github.com/surrealzerg/foundry-combat-narration-free",
+  "manifest": "https://raw.githubusercontent.com/surrealzerg/foundry-combat-narration-free/main/module.json",
+  "download": "https://raw.githubusercontent.com/surrealzerg/foundry-combat-narration-free/main/combat-narration-free.zip",
+  "id": "combat-narration-free",
+  "compatibility": {
+    "minimum": "12",
+    "verified": "13.351"
+  }
+}
