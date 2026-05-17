@@ -16,6 +16,19 @@ Hooks.once("init", () => {
 });
 
 
+const NARRATION_PRE_ROLL_STATUSES = new Map();
+
+Hooks.on("midi-qol.preAttackRollComplete", async (workflow) => {
+  const targets = workflow.targets ? [...workflow.targets] : [];
+
+  for (const target of targets) {
+    const key = `${workflow.id}.${target.id}`;
+    NARRATION_PRE_ROLL_STATUSES.set(key, new Set(target.actor?.statuses ?? []));
+  }
+});
+
+
+
 //helpers
 function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -29,6 +42,37 @@ function narrateLog(...args) {
 function narrateWarn(...args) {
   const suppress = game.settings.get("combat-narration", "suppressDebug");
   if (!suppress) console.warn(...args);
+}
+
+function collectDamageTypesFromObject(obj, found = new Set()) {
+  if (!obj || typeof obj !== "object") return found;
+
+  if (typeof obj.type === "string") {
+    const type = obj.type.toLowerCase();
+    if ([
+      "acid", "bludgeoning", "cold", "fire", "force",
+      "lightning", "necrotic", "piercing", "poison",
+      "psychic", "radiant", "slashing", "thunder"
+    ].includes(type)) {
+      found.add(type);
+    }
+  }
+
+  if (obj.types instanceof Set) {
+    for (const type of obj.types) found.add(String(type).toLowerCase());
+  }
+
+  if (Array.isArray(obj.types)) {
+    for (const type of obj.types) found.add(String(type).toLowerCase());
+  }
+
+  for (const value of Object.values(obj)) {
+    if (value && typeof value === "object") {
+      collectDamageTypesFromObject(value, found);
+    }
+  }
+
+  return found;
 }
 
 function normalizeConditionValue(raw) {
@@ -246,28 +290,28 @@ Hooks.on("midi-qol.RollComplete", async (workflow) => {
   const properties = item.system?.properties;
   const isAmmo = properties?.has("amm");
   const isThrown = properties?.has("thr");
-  const isFearSpell  = itemAppliesCondition(workflow, "frightened") || [...(workflow.failedSaves ?? [])].some(t => t.actor?.statuses?.has("frightened"));
+  const isFearSpell = itemAppliesCondition(workflow, "frightened");
 
   let damageTypes = new Set();
 
-// ✅ 1. Modern (DnD5e 4.x) activity-based types
-const activities = Object.values(item.system?.activities || {});
-for (const act of activities) {
-  if (!act.damage?.parts) continue;
-  for (const part of act.damage.parts) {
-    for (const dmg of part.types || []) {
-      damageTypes.add(dmg.toLowerCase());
+  // ✅ 1. Modern (DnD5e 4.x) activity-based types
+  const activities = Object.values(item.system?.activities || {});
+  for (const act of activities) {
+    if (!act.damage?.parts) continue;
+    for (const part of act.damage.parts) {
+      for (const dmg of part.types || []) {
+        damageTypes.add(dmg.toLowerCase());
+      }
     }
   }
-}
 
-// ✅ 2. Legacy weapon support
-const legacyTypes = item?.system?.damage?.base?.types;
-if (legacyTypes && legacyTypes instanceof Set) {
-  for (const type of legacyTypes) {
-    damageTypes.add(type.toLowerCase());
+  // ✅ 2. Legacy weapon support
+  const legacyTypes = item?.system?.damage?.base?.types;
+  if (legacyTypes && legacyTypes instanceof Set) {
+    for (const type of legacyTypes) {
+      damageTypes.add(type.toLowerCase());
+    }
   }
-}
 
   // ✅ 3. Fallback: some spells still use item.system.damage.parts directly
   const fallbackParts = item.system?.damage?.parts || [];
@@ -275,7 +319,17 @@ if (legacyTypes && legacyTypes instanceof Set) {
     if (type) damageTypes.add(type.toLowerCase());
   }
 
-  
+  // Modern dnd5e / Midi fallback: crawl activity + item damage structures
+  collectDamageTypesFromObject(workflow.activity, damageTypes);
+  collectDamageTypesFromObject(workflow.item?.system?.activities, damageTypes);
+  collectDamageTypesFromObject(workflow.item?.system?.damage, damageTypes);
+
+  if (workflow.defaultDamageType) {
+    damageTypes.add(String(workflow.defaultDamageType).toLowerCase());
+  }
+
+  narrateLog("🎯 Collected Damage Types:", [...damageTypes]);
+
 
   // 🪄 Skip hit/miss narration for non-damaging spells
   const workflowRepresentsDamagingAction =
@@ -527,54 +581,55 @@ if (hitTargets.length === 0 || (isSaveSpell && workflow.failedSaves?.size === 0)
   }
   
 
-  //condition specific handling
-  const SUPPORTED_CONDITIONS = new Set([
-    "blinded",
-    "charmed",
-    "deafened",
-    "frightened",
-    "grappled",
-    "incapacitated",
-    "invisible",
-    "paralyzed",
-    "petrified",
-    "poisoned",
-    "prone",
-    "restrained",
-    "stunned",
-    "exhausted"
-  ]);
-  const appliedConditions = new Set();
-  // 1️⃣ Conditions defined on the item itself
-  for (const e of workflow.item?.effects ?? []) {
-    for (const status of e.statuses ?? []) {
-      appliedConditions.add(status);
-    }
+  // condition specific handling
+const SUPPORTED_CONDITIONS = new Set([
+  "blinded",
+  "charmed",
+  "deafened",
+  "frightened",
+  "grappled",
+  "incapacitated",
+  "invisible",
+  "paralyzed",
+  "petrified",
+  "poisoned",
+  "prone",
+  "restrained",
+  "stunned",
+  "exhausted"
+]);
+
+const newlyAppliedConditions = new Set();
+
+const preStatusKey = `${workflow.id}.${target.id}`;
+const preStatuses = NARRATION_PRE_ROLL_STATUSES.get(preStatusKey) ?? new Set();
+const postStatuses = new Set(target.actor?.statuses ?? []);
+
+for (const status of postStatuses) {
+  const normalized = String(status).toLowerCase();
+
+  if (!preStatuses.has(status)) {
+    newlyAppliedConditions.add(normalized);
   }
-  // 2️⃣ Conditions actually present on failed-save targets
-  for (const t of workflow.failedSaves ?? []) {
-    for (const status of t.actor?.statuses ?? []) {
-      appliedConditions.add(status);
-    }
-  }
-  const conditions = [...appliedConditions].map(c => String(c).toLowerCase());
+}
 
-  const targetConditionImmunities = getActorConditionImmunities(target.actor);
-  narrateLog(`📌 Target Condition Immunities: ${[...targetConditionImmunities]}`);
+NARRATION_PRE_ROLL_STATUSES.delete(preStatusKey);
 
-  const matchedConditions = conditions.filter(c =>
-    SUPPORTED_CONDITIONS.has(c) && !targetConditionImmunities.has(c)
-  );
+const targetConditionImmunities = getActorConditionImmunities(target.actor);
 
-  const blockedConditions = conditions.filter(c =>
-    SUPPORTED_CONDITIONS.has(c) && targetConditionImmunities.has(c)
-  );
+const matchedConditions = [...newlyAppliedConditions].filter(c =>
+  SUPPORTED_CONDITIONS.has(c) &&
+  !targetConditionImmunities.has(c)
+);
 
-  narrateLog(`🔥 Blocked Conditions By Immunity: ${blockedConditions}`);
+const blockedConditions = [];
 
-  narrateLog(`🔥 Conditions: ${conditions}`);
-  narrateLog(`🔥 Matched Conditions: ${matchedConditions}`);
-  narrateLog(`🔥 First Matched Conditions: ${matchedConditions.at(0)}`);
+narrateLog(`🔥 Pre Statuses: ${[...preStatuses]}`);
+narrateLog(`🔥 Post Statuses: ${[...postStatuses]}`);
+narrateLog(`🔥 Newly Applied Conditions: ${[...newlyAppliedConditions]}`);
+narrateLog(`🔥 Blocked Conditions By Immunity: ${blockedConditions}`);
+narrateLog(`🔥 Matched Conditions: ${matchedConditions}`);
+narrateLog(`🔥 First Matched Conditions: ${matchedConditions.at(0)}`);
 
   // PRIORITY ORDER:
 // 1. death
@@ -582,7 +637,7 @@ if (hitTargets.length === 0 || (isSaveSpell && workflow.failedSaves?.size === 0)
 // 3. applied condition
 // 4. fallback narration
 
-if (conditions.includes("dead")) {
+if (severity === "death") {
   narrateLog(`🔥 filename key: ${key}`);
   await playAudio(key);
 }

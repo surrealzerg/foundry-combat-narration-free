@@ -1,7 +1,7 @@
 {
   "title": "Combat Narration Free",
   "description": "Plays gothic audio narration based on damage type and severity when players attack in combat.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "esmodules": [
     "narrateCombat.js"
   ],
